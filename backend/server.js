@@ -62,7 +62,6 @@ async function scrapeMatchResults() {
     const page = await browser.newPage();
     console.log("[PUPPETEER] New page created");
 
-    // Array of team URLs
     const teamUrls = {
       Arsenal: "https://fbref.com/en/squads/18bb7c10/2024-2025/matchlogs/c9/schedule/Arsenal-Scores-and-Fixtures-Premier-League",
       Chelsea: "https://fbref.com/en/squads/cff3d9bb/2024-2025/matchlogs/c9/schedule/Chelsea-Scores-and-Fixtures-Premier-League",
@@ -104,6 +103,7 @@ async function scrapeMatchResults() {
 
 // ---------------------- Room Management ---------------------- //
 const stockRooms = new Map();
+const footballRooms = new Map();
 
 // ---------------------- Stock Data Functions ---------------------- //
 async function fetchStockData(symbol) {
@@ -146,20 +146,42 @@ async function fetchStockData(symbol) {
 io.on("connection", (socket) => {
   console.log("Client connected:", socket.id);
 
-  // Scraping match results for football
+  // ======== FOOTBALL ROOM HANDLING ========
+  socket.on("joinFootballRoom", (roomId) => {
+    if (!roomId) {
+      return socket.emit("error", "Room ID is required to join football room.");
+    }
+    if (!footballRooms.has(roomId)) {
+      footballRooms.set(roomId, {
+        clients: new Set(),
+        data: {}, // will hold match results
+      });
+    }
+    const room = footballRooms.get(roomId);
+    room.clients.add(socket.id);
+    socket.join(roomId);
+    io.to(roomId).emit("roomClients", Array.from(room.clients));
+  });
+
   socket.on("requestMatchResults", async (roomId) => {
     try {
-      console.log(`[WS] Received results request from ${socket.id} for room ${roomId}`);
+      if (!roomId) {
+        return socket.emit("error", "Room ID is required for match results.");
+      }
+      console.log(`[WS] Football results request from ${socket.id} for room ${roomId}`);
       const results = await scrapeMatchResults();
-      socket.emit("matchResults", results);
-      console.log(`[WS] Sent results to ${socket.id}`);
+      if (footballRooms.has(roomId)) {
+        const room = footballRooms.get(roomId);
+        room.data = results;
+      }
+      io.to(roomId).emit("matchResults", results);
     } catch (error) {
-      console.error("[WS ERROR] Results request failed:", error);
+      console.error("[WS ERROR] Football results request failed:", error);
       socket.emit("error", "Failed to fetch match results");
     }
   });
 
-  // Handle joining a stock room
+  // ======== STOCK ROOM HANDLING ========
   socket.on("joinStockRoom", async (roomId) => {
     try {
       if (!roomId) {
@@ -174,16 +196,13 @@ io.on("connection", (socket) => {
       const room = stockRooms.get(roomId);
       room.clients.add(socket.id);
       socket.join(roomId);
-      // Send the current stock data to the joining client
       socket.emit("stockUpdate", room.data);
-      // Broadcast the updated client list to everyone in the room
       io.to(roomId).emit("roomClients", Array.from(room.clients));
     } catch (error) {
       socket.emit("error", `Stock room join failed: ${error.message}`);
     }
   });
 
-  // Handle stock symbol updates
   socket.on("updateSymbol", async (payload) => {
     if (!payload || !payload.symbol || !payload.roomId) {
       return socket.emit("error", "Invalid updateSymbol payload");
@@ -203,16 +222,26 @@ io.on("connection", (socket) => {
     }
   });
 
-  // Handle disconnects: remove the client from any joined rooms and broadcast the updated client list
+  // ======== DISCONNECT HANDLING ========
   socket.on("disconnect", () => {
     console.log("Client disconnected:", socket.id);
+
     stockRooms.forEach((room, roomId) => {
       if (room.clients.has(socket.id)) {
         room.clients.delete(socket.id);
         io.to(roomId).emit("roomClients", Array.from(room.clients));
         if (room.clients.size === 0) {
-          // Delete room after 5 minutes if empty
           setTimeout(() => stockRooms.delete(roomId), 300000);
+        }
+      }
+    });
+
+    footballRooms.forEach((room, roomId) => {
+      if (room.clients.has(socket.id)) {
+        room.clients.delete(socket.id);
+        io.to(roomId).emit("roomClients", Array.from(room.clients));
+        if (room.clients.size === 0) {
+          setTimeout(() => footballRooms.delete(roomId), 300000);
         }
       }
     });
@@ -238,7 +267,8 @@ app.post("/upload", upload.single("file"), (req, res) => {
 const PORT = process.env.PORT || 5001;
 server.listen(PORT, () => {
   console.log(`Server running on port ${PORT}`);
-  // Refresh stock data every 5 minutes and broadcast updates
+
+  // Refresh stock data every 5 minutes
   setInterval(async () => {
     const newStockData = await fetchStockData(SYMBOL);
     stockRooms.forEach((room, roomId) => {
@@ -247,5 +277,5 @@ server.listen(PORT, () => {
         io.to(roomId).emit("stockUpdate", newStockData);
       }
     });
-  }, 300000); // 5 minutes
+  }, 300000);
 });

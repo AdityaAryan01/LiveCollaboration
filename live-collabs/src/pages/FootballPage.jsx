@@ -3,14 +3,13 @@ import { useParams } from "react-router-dom";
 import * as d3 from "d3";
 import { io } from "socket.io-client";
 
-// Import logo images
+// Import logos...
 import ArsenalLogo from "../assets/arsenal-logo.jpg";
 import ChelseaLogo from "../assets/chelsea-logo.jpg";
 import ManCityLogo from "../assets/manchester-city-logo.jpg";
 import LiverpoolLogo from "../assets/liverpool-logo.jpg";
 import ForestLogo from "../assets/nottingham-forest.png";
 
-// Team colors and logos
 const colors = {
   Arsenal: "#EF0107",
   Chelsea: "#034694",
@@ -27,12 +26,16 @@ const logoPaths = {
   "Nottingham Forest": ForestLogo
 };
 
+const socket = io("http://localhost:5001", {
+  transports: ["websocket", "polling"],
+});
+
 const FootballPage = () => {
   const { roomId } = useParams();
   const [teamsData, setTeamsData] = useState({});
   const [loading, setLoading] = useState(true);
+  const [clientIds, setClientIds] = useState([]);
   const svgRef = useRef();
-  const socketRef = useRef();
 
   const trimResults = (results) => {
     let lastValid = results.length - 1;
@@ -43,29 +46,32 @@ const FootballPage = () => {
   };
 
   useEffect(() => {
-    socketRef.current = io("http://localhost:5001", {
-      transports: ["websocket", "polling"],
-      withCredentials: true
-    });
+    if (roomId) {
+      socket.emit("joinFootballRoom", roomId);
+      socket.emit("requestMatchResults", roomId);
+    }
+  }, [roomId]);
 
-    socketRef.current.on("connect", () => {
-      socketRef.current.emit("requestMatchResults", roomId);
-    });
-
-    socketRef.current.on("matchResults", (results) => {
+  useEffect(() => {
+    socket.on("matchResults", (results) => {
       setTeamsData(results);
       setLoading(false);
     });
 
-    socketRef.current.on("error", (error) => {
+    socket.on("roomClients", (clients) => {
+      setClientIds(clients);
+    });
+
+    socket.on("error", (error) => {
       console.error("WebSocket Error:", error);
       setLoading(false);
     });
 
     return () => {
-      socketRef.current.disconnect();
+      socket.off("matchResults");
+      socket.off("roomClients");
     };
-  }, [roomId]);
+  }, []);
 
   const calculateCumulativePoints = (results) => {
     let cumulative = [0];
@@ -144,13 +150,11 @@ const FootballPage = () => {
       .x((d, i) => xScale(i))
       .y((d) => yScale(d));
 
-      teams.forEach((team) => {
-        const validLength = cumulativePoints[team].length;
-        const validRankings = rankingsPerTeam[team].slice(0, validLength);
-      // Create unique clip path ID
+    teams.forEach((team) => {
+      const validLength = cumulativePoints[team].length;
+      const validRankings = rankingsPerTeam[team].slice(0, validLength);
+
       const clipId = `clip-${team.replace(/\s+/g, "-")}`;
-      
-      // Add clip path
       svg.append("clipPath")
         .attr("id", clipId)
         .append("rect")
@@ -159,33 +163,26 @@ const FootballPage = () => {
         .attr("width", 0)
         .attr("height", height);
 
-      // Draw line with clipping
       svg.append("path")
         .datum(validRankings)
-        .attr("class", `team-line ${team.replace(/\s+/g, "-")}`)
         .attr("fill", "none")
         .attr("stroke", colors[team])
         .attr("stroke-width", 2)
         .attr("clip-path", `url(#${clipId})`)
         .attr("d", line);
 
-      // Logo animation
-      const fullRankings = rankingsPerTeam[team];
       if (validLength === 0) return;
       const initialRank = validRankings[0];
       const initialY = yScale(initialRank);
 
       const logo = svg.append("image")
-        .attr("class", `team-logo ${team.replace(/\s+/g, "-")}`)
         .attr("xlink:href", logoPaths[team])
         .attr("width", 40)
         .attr("height", 40)
         .attr("x", xScale(0) - 20)
         .attr("y", isNaN(initialY) ? 0 : initialY - 20);
 
-      // Get reference to clip path rectangle
       const clipRect = svg.select(`#${clipId} rect`);
-
       logo.transition()
         .duration(18000)
         .ease(d3.easeLinear)
@@ -196,15 +193,11 @@ const FootballPage = () => {
             const x = xScale(animatedMatchday);
             const i = Math.min(Math.floor(animatedMatchday), validRankings.length - 1);
             const fraction = Math.max(0, Math.min(animatedMatchday - i, 1));
-
-            // Update clip path width
             clipRect.attr("width", Math.max(0, x - margin.left));
-
             const rank1 = validRankings[i];
             const rank2 = validRankings[i + 1] || rank1;
             const interpolatedRank = rank1 + (rank2 - rank1) * fraction;
             const yPos = yScale(interpolatedRank);
-            
             if (!isNaN(yPos)) {
               logo.attr("x", x - 20).attr("y", yPos - 20);
             }
@@ -212,19 +205,15 @@ const FootballPage = () => {
         });
     });
 
-    // Legend
     const legend = svg.append("g")
       .attr("transform", `translate(${width - margin.right + 20},${margin.top})`);
-
     teams.forEach((team, i) => {
       const legendItem = legend.append("g")
         .attr("transform", `translate(0,${i * 30})`);
-
       legendItem.append("rect")
         .attr("width", 20)
         .attr("height", 20)
         .attr("fill", colors[team]);
-
       legendItem.append("text")
         .attr("x", 30)
         .attr("y", 15)
@@ -237,6 +226,19 @@ const FootballPage = () => {
   return (
     <div style={{ textAlign: "center", padding: "20px" }}>
       <h2>Premier League Rankings Progression - Room {roomId}</h2>
+      <button onClick={() => navigator.clipboard.writeText(roomId)}>Copy Room ID</button>
+      <div style={{ marginTop: "20px" }}>
+        <h3>Clients in Room:</h3>
+        {clientIds.length > 0 ? (
+          <ul>
+            {clientIds.map((id) => (
+              <li key={id}>{id}</li>
+            ))}
+          </ul>
+        ) : (
+          <p>No clients connected.</p>
+        )}
+      </div>
       {loading ? (
         <div>Loading match data...</div>
       ) : (
