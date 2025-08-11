@@ -366,9 +366,27 @@ app.post("/upload", upload.single("file"), (req, res) => {
   ).end(file.buffer);
 });
 
-// Mount error handlers for HTTP API
+
+// ---------------------- Serve Frontend in Production ---------------------- //
+import path from "path";
+import { fileURLToPath } from "url";
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+
+if (process.env.NODE_ENV === "production") {
+  app.use(express.static(path.join(__dirname, "../live-collabs/dist")));
+
+  app.get("*", (req, res) =>
+    res.sendFile(path.resolve(__dirname, "../live-collabs/dist", "index.html"))
+  );
+}
+
+
+// ---------------------- Error Handlers ---------------------- //
 app.use(notFound);
 app.use(errorHandler);
+
 
 // ---------------------- Server Initialization ---------------------- //
 const PORT = process.env.PORT || 5001;
