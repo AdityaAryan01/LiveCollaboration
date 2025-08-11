@@ -9,6 +9,7 @@ import { v4 as uuidv4 } from "uuid";
 import dotenv from "dotenv";
 import axios from "axios";
 import puppeteer from "puppeteer";
+import chromium from '@sparticuz/chromium';
 import cookieParser from "cookie-parser";
 import cookie from "cookie";
 import jwt from "jsonwebtoken";
@@ -61,25 +62,43 @@ let SYMBOL = process.env.STOCK_SYMBOL ? process.env.STOCK_SYMBOL.replace(/(^"|"$
 const FUNCTION = "TIME_SERIES_WEEKLY_ADJUSTED";
 
 // ---------------------- FBRef Scraping Functions ---------------------- //
+
+
 async function scrapeMatchResults() {
   console.log("\n[SCRAPE START] Starting scraping process at", new Date().toISOString());
   let browser;
   try {
     console.log("[PUPPETEER] Launching browser instance...");
-    browser = await puppeteer.launch({
-      headless: "new",
-      args: ["--no-sandbox", "--disable-setuid-sandbox"],
-    });
+
+    const isProduction = process.env.NODE_ENV === "production";
+
+    browser = await puppeteer.launch(
+      isProduction
+        ? {
+            args: chromium.args,
+            defaultViewport: chromium.defaultViewport,
+            executablePath: await chromium.executablePath(),
+            headless: chromium.headless,
+          }
+        : {
+            headless: "new", // Local dev
+          }
+    );
 
     const page = await browser.newPage();
     console.log("[PUPPETEER] New page created");
 
     const teamUrls = {
-      Arsenal: "https://fbref.com/en/squads/18bb7c10/2024-2025/matchlogs/c9/schedule/Arsenal-Scores-and-Fixtures-Premier-League",
-      Chelsea: "https://fbref.com/en/squads/cff3d9bb/2024-2025/matchlogs/c9/schedule/Chelsea-Scores-and-Fixtures-Premier-League",
-      "Manchester City": "https://fbref.com/en/squads/b8fd03ef/2024-2025/matchlogs/c9/schedule/Manchester-City-Scores-and-Fixtures-Premier-League",
-      Liverpool: "https://fbref.com/en/squads/822bd0ba/2024-2025/matchlogs/c9/schedule/Liverpool-Scores-and-Fixtures-Premier-League",
-      "Nottingham Forest": "https://fbref.com/en/squads/e4a775cb/2024-2025/matchlogs/c9/schedule/Nottingham-Forest-Scores-and-Fixtures-Premier-League",
+      Arsenal:
+        "https://fbref.com/en/squads/18bb7c10/2024-2025/matchlogs/c9/schedule/Arsenal-Scores-and-Fixtures-Premier-League",
+      Chelsea:
+        "https://fbref.com/en/squads/cff3d9bb/2024-2025/matchlogs/c9/schedule/Chelsea-Scores-and-Fixtures-Premier-League",
+      "Manchester City":
+        "https://fbref.com/en/squads/b8fd03ef/2024-2025/matchlogs/c9/schedule/Manchester-City-Scores-and-Fixtures-Premier-League",
+      Liverpool:
+        "https://fbref.com/en/squads/822bd0ba/2024-2025/matchlogs/c9/schedule/Liverpool-Scores-and-Fixtures-Premier-League",
+      "Nottingham Forest":
+        "https://fbref.com/en/squads/e4a775cb/2024-2025/matchlogs/c9/schedule/Nottingham-Forest-Scores-and-Fixtures-Premier-League",
     };
 
     const allResults = {};
