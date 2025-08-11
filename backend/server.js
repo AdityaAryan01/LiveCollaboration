@@ -85,46 +85,34 @@ function debugLog(...args) {
 
 // ---------------------- FBRef Scraping Functions ---------------------- //
 async function scrapeMatchResults() {
-  debugLog("[SCRAPE START] Starting scraping at", new Date().toISOString());
-  debugLog("ENV:", {
-    NODE_ENV: process.env.NODE_ENV,
-    PUPPETEER_SKIP_CHROMIUM_DOWNLOAD: process.env.PUPPETEER_SKIP_CHROMIUM_DOWNLOAD,
-    PORT: process.env.PORT,
-  });
-
+  console.log("\n[SCRAPE START] Starting scraping process at", new Date().toISOString());
   let browser;
   try {
-    debugLog("[PUPPETEER] Preparing launch options (isProduction?)", process.env.NODE_ENV === "production");
+    console.log("[PUPPETEER] Launching browser instance...");
+    const isProduction = process.env.NODE_ENV === "production";
 
-    if (process.env.NODE_ENV === "production") {
-      // Try to get the executable path first (for debug)
-      try {
-        const exePath = await chromium.executablePath();
-        debugLog("[PUPPETEER] chromium.executablePath() ->", exePath);
-      } catch (e) {
-        debugLog("[PUPPETEER] chromium.executablePath() threw:", e && e.message);
-      }
-
-      browser = await puppeteer.launch({
-        args: [
-          ...chromium.args,
-          "--no-sandbox",
-          "--disable-setuid-sandbox",
-          "--disable-dev-shm-usage",
-          "--disable-gpu",
-          "--no-zygote",
-        ],
-        defaultViewport: chromium.defaultViewport,
-        executablePath: await chromium.executablePath(),
-        headless: chromium.headless,
-      });
-    } else {
-      // Local dev - use default Puppeteer behavior
-      browser = await puppeteer.launch({ headless: "new" });
-    }
+    browser = await puppeteer.launch(
+      isProduction
+        ? {
+            args: [
+              ...chromium.args,
+              "--no-sandbox",
+              "--disable-setuid-sandbox",
+              "--disable-dev-shm-usage",
+              "--disable-gpu",
+              "--no-zygote"
+            ],
+            defaultViewport: chromium.defaultViewport,
+            executablePath: await chromium.executablePath(),
+            headless: chromium.headless,
+          }
+        : {
+            headless: "new",
+          }
+    );
 
     const page = await browser.newPage();
-    debugLog("[PUPPETEER] New page created");
+    console.log("[PUPPETEER] New page created");
 
     const teamUrls = {
       Arsenal:
@@ -142,39 +130,44 @@ async function scrapeMatchResults() {
     const allResults = {};
 
     for (const [team, url] of Object.entries(teamUrls)) {
-      debugLog(`[SCRAPER] Processing ${team} -> ${url}`);
-      const start = Date.now();
-      await page.goto(url, { waitUntil: "domcontentloaded", timeout: 30000 });
-
+      console.log(`[SCRAPER] Processing team: ${team}`);
       try {
+        console.log(`[SCRAPER DEBUG] Navigating to: ${url}`);
+        await page.goto(url, { waitUntil: "domcontentloaded", timeout: 30000 });
+        console.log(`[SCRAPER DEBUG] Page loaded for: ${team}`);
+
+        const pageTitle = await page.title();
+        console.log(`[SCRAPER DEBUG] Page title: ${pageTitle}`);
+
+        const htmlLength = (await page.content()).length;
+        console.log(`[SCRAPER DEBUG] HTML length: ${htmlLength}`);
+
+        console.log(`[SCRAPER DEBUG] Waiting for table selector...`);
         await page.waitForSelector("table.stats_table", { timeout: 15000 });
+        console.log(`[SCRAPER DEBUG] Selector found: table.stats_table`);
+
         const results = await page.$$eval("td[data-stat='result']", (cells) =>
           cells.map((cell) => cell.textContent.trim().charAt(0).toUpperCase())
         );
+
+        console.log(`[SCRAPER DEBUG] Results scraped for ${team}:`, results);
         allResults[team] = results;
-        debugLog(`[SCRAPER] ${team} results (first 6):`, results.slice(0, 6));
       } catch (error) {
-        debugLog(`[ERROR] Failed to scrape ${team}:`, error && error.message);
+        console.error(`[SCRAPER ERROR] Failed for ${team}:`, error);
         allResults[team] = [];
-      } finally {
-        debugLog(`[SCRAPER] ${team} took ${Date.now() - start}ms`);
       }
     }
 
     return allResults;
   } catch (error) {
-    debugLog("[ERROR] Scraping process failed:", error && error.stack ? error.stack : error);
+    console.error("[SCRAPE ERROR] Scraping process failed:", error);
     return {};
   } finally {
     if (browser) {
-      try {
-        await browser.close();
-        debugLog("[PUPPETEER] Browser closed successfully");
-      } catch (e) {
-        debugLog("[PUPPETEER] Browser close error:", e && e.message);
-      }
+      await browser.close();
+      console.log("[PUPPETEER] Browser closed successfully");
     }
-    debugLog("[SCRAPE END] Process completed at", new Date().toISOString());
+    console.log("[SCRAPE END] Process completed at", new Date().toISOString());
   }
 }
 
