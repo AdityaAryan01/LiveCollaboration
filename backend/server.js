@@ -76,7 +76,14 @@ async function scrapeMatchResults() {
     browser = await puppeteer.launch(
       isProduction
         ? {
-            args: chromium.args,
+            args: [
+              ...chromium.args,
+              "--no-sandbox",
+              "--disable-setuid-sandbox",
+              "--disable-dev-shm-usage",
+              "--disable-gpu",
+              "--no-zygote"
+            ],
             defaultViewport: chromium.defaultViewport,
             executablePath: await chromium.executablePath(),
             headless: chromium.headless,
