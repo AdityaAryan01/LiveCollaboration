@@ -1,3 +1,4 @@
+// server.js (merged with auth)
 import express from "express";
 import http from "http";
 import { Server } from "socket.io";
@@ -8,11 +9,27 @@ import { v4 as uuidv4 } from "uuid";
 import dotenv from "dotenv";
 import axios from "axios";
 import puppeteer from "puppeteer";
+import cookieParser from "cookie-parser";
+import cookie from "cookie";
+import jwt from "jsonwebtoken";
+
+// auth / db imports (your files)
+import connectDB from './config/db.js'; // your db connection file
+import userRoutes from "./routes/userRoutes.js";
+import User from "./models/userModel.js";
+import { notFound, errorHandler } from "./middleware/errorMiddleware.js";
 
 dotenv.config();
 
+// Connect to MongoDB
+connectDB();
+
 const app = express();
 const server = http.createServer(app);
+
+// Middleware for JSON and cookies
+app.use(express.json());
+app.use(cookieParser());
 
 // CORS Configuration
 app.use(
@@ -23,14 +40,9 @@ app.use(
   })
 );
 
-const io = new Server(server, {
-  cors: {
-    origin: ["http://localhost:5173", "http://localhost:5174"],
-    methods: ["GET", "POST"],
-    credentials: true,
-  },
-  transports: ["websocket", "polling"],
-});
+// Mount your auth routes
+// accessible: POST /api/users (register), POST /api/users/auth (login), POST /api/users/logout, GET/PUT /api/users/profile (protected)
+app.use("/api/users", userRoutes);
 
 // Initialize Cloudinary
 cloudinary.v2.config({
@@ -45,7 +57,7 @@ const upload = multer({ storage });
 
 // ---------------------- Stock Data Setup ---------------------- //
 const API_KEY = process.env.ALPHA_VANTAGE_KEY;
-let SYMBOL = "IBM"; // Default symbol
+let SYMBOL = process.env.STOCK_SYMBOL ? process.env.STOCK_SYMBOL.replace(/(^"|"$)/g, "") : "IBM";
 const FUNCTION = "TIME_SERIES_WEEKLY_ADJUSTED";
 
 // ---------------------- FBRef Scraping Functions ---------------------- //
@@ -102,8 +114,8 @@ async function scrapeMatchResults() {
 }
 
 // ---------------------- Room Management ---------------------- //
-const stockRooms = new Map();
-const footballRooms = new Map();
+const stockRooms = new Map(); // roomId -> { data, clients: Map<socketId, username> }
+const footballRooms = new Map(); // roomId -> { data, clients: Map<socketId, username> }
 
 // ---------------------- Stock Data Functions ---------------------- //
 async function fetchStockData(symbol) {
@@ -115,6 +127,8 @@ async function fetchStockData(symbol) {
         apikey: API_KEY,
       },
     });
+    console.log("[FETCH STOCK] Raw API response keys:", Object.keys(response.data));
+    console.log("[FETCH STOCK] First 200 chars of response:", JSON.stringify(response.data).slice(0, 200));
 
     if (response.data["Error Message"]) {
       console.error("API Error:", response.data["Error Message"]);
@@ -142,9 +156,62 @@ async function fetchStockData(symbol) {
   }
 }
 
+// ---------------------- WebSocket Setup ---------------------- //
+const io = new Server(server, {
+  cors: {
+    origin: ["http://localhost:5173", "http://localhost:5174"],
+    methods: ["GET", "POST"],
+    credentials: true,
+  },
+  transports: ["websocket", "polling"],
+});
+
+// Socket auth middleware: require valid JWT to connect
+// Socket auth middleware: accept token from handshake.auth.token OR cookie
+io.use(async (socket, next) => {
+  try {
+    // 1) Prefer token passed explicitly by client (socket.handshake.auth.token)
+    const authToken = socket.handshake?.auth?.token;
+    let token = authToken;
+
+    // 2) If not provided, fall back to cookie parse (existing behavior)
+    if (!token) {
+      const cookieHeader = socket.handshake.headers?.cookie;
+      if (!cookieHeader) {
+        return next(new Error("Authentication error - no token or cookie"));
+      }
+      const parsed = cookie.parse(cookieHeader || "");
+      token = parsed?.jwt;
+      if (!token) {
+        return next(new Error("Authentication error - no token found"));
+      }
+    }
+
+    // verify token
+    try {
+      const decoded = jwt.verify(token, process.env.JWT_SECRET);
+      const user = await User.findById(decoded.userId).select("-password");
+      if (!user) {
+        return next(new Error("Authentication error - user not found"));
+      }
+      socket.user = user;
+      socket.authToken = token; // optional: keep token on socket if needed
+      return next();
+    } catch (err) {
+      console.error("Socket token verify error:", err.message);
+      return next(new Error("Authentication error - invalid token"));
+    }
+  } catch (err) {
+    console.error("Socket auth middleware error:", err);
+    return next(new Error("Authentication error"));
+  }
+});
+
+
+
 // ---------------------- WebSocket Handling ---------------------- //
 io.on("connection", (socket) => {
-  console.log("Client connected:", socket.id);
+  console.log("Client connected:", socket.id, socket.user ? `user:${socket.user._id}` : "guest");
 
   // ======== FOOTBALL ROOM HANDLING ========
   socket.on("joinFootballRoom", (roomId) => {
@@ -153,14 +220,16 @@ io.on("connection", (socket) => {
     }
     if (!footballRooms.has(roomId)) {
       footballRooms.set(roomId, {
-        clients: new Set(),
-        data: {}, // will hold match results
+        clients: new Map(),
+        data: {},
       });
     }
     const room = footballRooms.get(roomId);
-    room.clients.add(socket.id);
+
+    const username = socket.user?.name || `Guest-${socket.id.slice(0, 5)}`;
+    room.clients.set(socket.id, username);
     socket.join(roomId);
-    io.to(roomId).emit("roomClients", Array.from(room.clients));
+    emitRoomClients(footballRooms, roomId);
   });
 
   socket.on("requestMatchResults", async (roomId) => {
@@ -171,8 +240,7 @@ io.on("connection", (socket) => {
       console.log(`[WS] Football results request from ${socket.id} for room ${roomId}`);
       const results = await scrapeMatchResults();
       if (footballRooms.has(roomId)) {
-        const room = footballRooms.get(roomId);
-        room.data = results;
+        footballRooms.get(roomId).data = results;
       }
       io.to(roomId).emit("matchResults", results);
     } catch (error) {
@@ -190,30 +258,31 @@ io.on("connection", (socket) => {
       if (!stockRooms.has(roomId)) {
         stockRooms.set(roomId, {
           data: await fetchStockData(SYMBOL),
-          clients: new Set(),
+          clients: new Map(),
         });
       }
       const room = stockRooms.get(roomId);
-      room.clients.add(socket.id);
+
+      const username = socket.user?.name || `Guest-${socket.id.slice(0, 5)}`;
+      room.clients.set(socket.id, username);
+
       socket.join(roomId);
       socket.emit("stockUpdate", room.data);
-      io.to(roomId).emit("roomClients", Array.from(room.clients));
+      emitRoomClients(stockRooms, roomId);
     } catch (error) {
       socket.emit("error", `Stock room join failed: ${error.message}`);
     }
   });
 
-  socket.on("updateSymbol", async (payload) => {
-    if (!payload || !payload.symbol || !payload.roomId) {
+  socket.on("updateSymbol", async ({ symbol, roomId }) => {
+    if (!symbol || !roomId) {
       return socket.emit("error", "Invalid updateSymbol payload");
     }
-    const { symbol, roomId } = payload;
     try {
       SYMBOL = symbol;
       const stockData = await fetchStockData(symbol);
       if (stockRooms.has(roomId)) {
-        const room = stockRooms.get(roomId);
-        room.data = stockData;
+        stockRooms.get(roomId).data = stockData;
         io.to(roomId).emit("stockUpdate", stockData);
       }
     } catch (error) {
@@ -222,30 +291,45 @@ io.on("connection", (socket) => {
     }
   });
 
+  // ======== SET USERNAME ========
+  socket.on("setUsername", ({ roomId, username, type }) => {
+    const roomMap = type === "football" ? footballRooms : stockRooms;
+    if (roomMap.has(roomId)) {
+      const room = roomMap.get(roomId);
+      if (room.clients.has(socket.id)) {
+        // respect DB username if present (don't overwrite)
+        if (socket.user) {
+          room.clients.set(socket.id, socket.user.name);
+        } else {
+          room.clients.set(socket.id, username?.trim() || `Guest-${socket.id.slice(0, 5)}`);
+        }
+        emitRoomClients(roomMap, roomId);
+      }
+    }
+  });
+
   // ======== DISCONNECT HANDLING ========
   socket.on("disconnect", () => {
     console.log("Client disconnected:", socket.id);
-
-    stockRooms.forEach((room, roomId) => {
-      if (room.clients.has(socket.id)) {
-        room.clients.delete(socket.id);
-        io.to(roomId).emit("roomClients", Array.from(room.clients));
-        if (room.clients.size === 0) {
-          setTimeout(() => stockRooms.delete(roomId), 300000);
+    [stockRooms, footballRooms].forEach((roomMap) => {
+      roomMap.forEach((room, roomId) => {
+        if (room.clients.has(socket.id)) {
+          room.clients.delete(socket.id);
+          emitRoomClients(roomMap, roomId);
+          if (room.clients.size === 0) {
+            // garbage collect unused rooms after 5 minutes
+            setTimeout(() => roomMap.delete(roomId), 300000);
+          }
         }
-      }
-    });
-
-    footballRooms.forEach((room, roomId) => {
-      if (room.clients.has(socket.id)) {
-        room.clients.delete(socket.id);
-        io.to(roomId).emit("roomClients", Array.from(room.clients));
-        if (room.clients.size === 0) {
-          setTimeout(() => footballRooms.delete(roomId), 300000);
-        }
-      }
+      });
     });
   });
+
+  function emitRoomClients(roomMap, roomId) {
+    if (roomMap.has(roomId)) {
+      io.to(roomId).emit("roomClients", Array.from(roomMap.get(roomId).clients.values()));
+    }
+  }
 });
 
 // ---------------------- File Upload Endpoint ---------------------- //
@@ -263,12 +347,15 @@ app.post("/upload", upload.single("file"), (req, res) => {
   ).end(file.buffer);
 });
 
+// Mount error handlers for HTTP API
+app.use(notFound);
+app.use(errorHandler);
+
 // ---------------------- Server Initialization ---------------------- //
 const PORT = process.env.PORT || 5001;
 server.listen(PORT, () => {
   console.log(`Server running on port ${PORT}`);
 
-  // Refresh stock data every 5 minutes
   setInterval(async () => {
     const newStockData = await fetchStockData(SYMBOL);
     stockRooms.forEach((room, roomId) => {
