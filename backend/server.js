@@ -35,7 +35,8 @@ app.use(cookieParser());
 // CORS Configuration
 app.use(
   cors({
-    origin: ["http://localhost:5173", "http://localhost:5174"],
+    origin: ["http://localhost:5173", "http://localhost:5174","https://livecollaboration.onrender.com"
+],
     methods: ["GET", "POST"],
     credentials: true,
   })
