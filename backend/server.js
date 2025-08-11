@@ -9,13 +9,15 @@ import { v4 as uuidv4 } from "uuid";
 import dotenv from "dotenv";
 import axios from "axios";
 import puppeteer from "puppeteer";
-import chromium from '@sparticuz/chromium';
+import chromium from "@sparticuz/chromium";
 import cookieParser from "cookie-parser";
 import cookie from "cookie";
 import jwt from "jsonwebtoken";
+import path from "path";
+import { fileURLToPath } from "url";
 
 // auth / db imports (your files)
-import connectDB from './config/db.js'; // your db connection file
+import connectDB from "./config/db.js"; // your db connection file
 import userRoutes from "./routes/userRoutes.js";
 import User from "./models/userModel.js";
 import { notFound, errorHandler } from "./middleware/errorMiddleware.js";
@@ -32,18 +34,23 @@ const server = http.createServer(app);
 app.use(express.json());
 app.use(cookieParser());
 
+// ====== Allowed origins (include your deployed front) ======
+const allowedOrigins = [
+  "http://localhost:5173",
+  "http://localhost:5174",
+  "https://livecollaboration.onrender.com",
+];
+
 // CORS Configuration
 app.use(
   cors({
-    origin: ["http://localhost:5173", "http://localhost:5174","https://livecollaboration.onrender.com"
-],
+    origin: allowedOrigins,
     methods: ["GET", "POST"],
     credentials: true,
   })
 );
 
 // Mount your auth routes
-// accessible: POST /api/users (register), POST /api/users/auth (login), POST /api/users/logout, GET/PUT /api/users/profile (protected)
 app.use("/api/users", userRoutes);
 
 // Initialize Cloudinary
@@ -59,42 +66,65 @@ const upload = multer({ storage });
 
 // ---------------------- Stock Data Setup ---------------------- //
 const API_KEY = process.env.ALPHA_VANTAGE_KEY;
-let SYMBOL = process.env.STOCK_SYMBOL ? process.env.STOCK_SYMBOL.replace(/(^"|"$)/g, "") : "IBM";
+let SYMBOL = process.env.STOCK_SYMBOL
+  ? process.env.STOCK_SYMBOL.replace(/(^"|"$)/g, "")
+  : "IBM";
 const FUNCTION = "TIME_SERIES_WEEKLY_ADJUSTED";
 
+// ---------------------- Puppeteer / Scraping utils ---------------------- //
+let scrapeLock = {
+  inProgress: false,
+  cachedResults: null,
+  lastRun: 0,
+};
+
+// Debug helper
+function debugLog(...args) {
+  console.log("[SERVER DEBUG]", ...args);
+}
+
 // ---------------------- FBRef Scraping Functions ---------------------- //
-
-
 async function scrapeMatchResults() {
-  console.log("\n[SCRAPE START] Starting scraping process at", new Date().toISOString());
+  debugLog("[SCRAPE START] Starting scraping at", new Date().toISOString());
+  debugLog("ENV:", {
+    NODE_ENV: process.env.NODE_ENV,
+    PUPPETEER_SKIP_CHROMIUM_DOWNLOAD: process.env.PUPPETEER_SKIP_CHROMIUM_DOWNLOAD,
+    PORT: process.env.PORT,
+  });
+
   let browser;
   try {
-    console.log("[PUPPETEER] Launching browser instance...");
+    debugLog("[PUPPETEER] Preparing launch options (isProduction?)", process.env.NODE_ENV === "production");
 
-    const isProduction = process.env.NODE_ENV === "production";
+    if (process.env.NODE_ENV === "production") {
+      // Try to get the executable path first (for debug)
+      try {
+        const exePath = await chromium.executablePath();
+        debugLog("[PUPPETEER] chromium.executablePath() ->", exePath);
+      } catch (e) {
+        debugLog("[PUPPETEER] chromium.executablePath() threw:", e && e.message);
+      }
 
-    browser = await puppeteer.launch(
-      isProduction
-        ? {
-            args: [
-              ...chromium.args,
-              "--no-sandbox",
-              "--disable-setuid-sandbox",
-              "--disable-dev-shm-usage",
-              "--disable-gpu",
-              "--no-zygote"
-            ],
-            defaultViewport: chromium.defaultViewport,
-            executablePath: await chromium.executablePath(),
-            headless: chromium.headless,
-          }
-        : {
-            headless: "new", // Local dev
-          }
-    );
+      browser = await puppeteer.launch({
+        args: [
+          ...chromium.args,
+          "--no-sandbox",
+          "--disable-setuid-sandbox",
+          "--disable-dev-shm-usage",
+          "--disable-gpu",
+          "--no-zygote",
+        ],
+        defaultViewport: chromium.defaultViewport,
+        executablePath: await chromium.executablePath(),
+        headless: chromium.headless,
+      });
+    } else {
+      // Local dev - use default Puppeteer behavior
+      browser = await puppeteer.launch({ headless: "new" });
+    }
 
     const page = await browser.newPage();
-    console.log("[PUPPETEER] New page created");
+    debugLog("[PUPPETEER] New page created");
 
     const teamUrls = {
       Arsenal:
@@ -112,7 +142,8 @@ async function scrapeMatchResults() {
     const allResults = {};
 
     for (const [team, url] of Object.entries(teamUrls)) {
-      console.log(`[SCRAPER] Processing ${team}...`);
+      debugLog(`[SCRAPER] Processing ${team} -> ${url}`);
+      const start = Date.now();
       await page.goto(url, { waitUntil: "domcontentloaded", timeout: 30000 });
 
       try {
@@ -121,22 +152,29 @@ async function scrapeMatchResults() {
           cells.map((cell) => cell.textContent.trim().charAt(0).toUpperCase())
         );
         allResults[team] = results;
-        console.log(`[SCRAPER] ${team} results:`, results.slice(0, 5), "...");
+        debugLog(`[SCRAPER] ${team} results (first 6):`, results.slice(0, 6));
       } catch (error) {
-        console.error(`[ERROR] Failed to scrape ${team}:`, error);
+        debugLog(`[ERROR] Failed to scrape ${team}:`, error && error.message);
         allResults[team] = [];
+      } finally {
+        debugLog(`[SCRAPER] ${team} took ${Date.now() - start}ms`);
       }
     }
+
     return allResults;
   } catch (error) {
-    console.error("[ERROR] Scraping process failed:", error);
+    debugLog("[ERROR] Scraping process failed:", error && error.stack ? error.stack : error);
     return {};
   } finally {
     if (browser) {
-      await browser.close();
-      console.log("[PUPPETEER] Browser closed successfully");
+      try {
+        await browser.close();
+        debugLog("[PUPPETEER] Browser closed successfully");
+      } catch (e) {
+        debugLog("[PUPPETEER] Browser close error:", e && e.message);
+      }
     }
-    console.log("[SCRAPE END] Process completed at", new Date().toISOString());
+    debugLog("[SCRAPE END] Process completed at", new Date().toISOString());
   }
 }
 
@@ -154,11 +192,11 @@ async function fetchStockData(symbol) {
         apikey: API_KEY,
       },
     });
-    console.log("[FETCH STOCK] Raw API response keys:", Object.keys(response.data));
-    console.log("[FETCH STOCK] First 200 chars of response:", JSON.stringify(response.data).slice(0, 200));
+    debugLog("[FETCH STOCK] Raw API response keys:", Object.keys(response.data || {}));
+    debugLog("[FETCH STOCK] Preview:", JSON.stringify(response.data || {}).slice(0, 200));
 
     if (response.data["Error Message"]) {
-      console.error("API Error:", response.data["Error Message"]);
+      debugLog("API Error:", response.data["Error Message"]);
       return [];
     }
 
@@ -178,7 +216,7 @@ async function fetchStockData(symbol) {
           .reverse()
       : [];
   } catch (error) {
-    console.error("Error fetching stock data:", error);
+    debugLog("Error fetching stock data:", error && error.message);
     return [];
   }
 }
@@ -186,80 +224,73 @@ async function fetchStockData(symbol) {
 // ---------------------- WebSocket Setup ---------------------- //
 const io = new Server(server, {
   cors: {
-    origin: [
-      "http://localhost:5173",
-      "http://localhost:5174",
-      "https://livecollaboration.onrender.com"
-    ],
+    origin: allowedOrigins,
     methods: ["GET", "POST"],
     credentials: true,
   },
   transports: ["websocket", "polling"],
 });
 
-// Socket auth middleware: require valid JWT to connect
 // Socket auth middleware: accept token from handshake.auth.token OR cookie
 io.use(async (socket, next) => {
   try {
-    // 1) Prefer token passed explicitly by client (socket.handshake.auth.token)
     const authToken = socket.handshake?.auth?.token;
     let token = authToken;
 
-    // 2) If not provided, fall back to cookie parse (existing behavior)
     if (!token) {
       const cookieHeader = socket.handshake.headers?.cookie;
       if (!cookieHeader) {
+        debugLog("[SOCKET AUTH] No cookie header found on handshake");
         return next(new Error("Authentication error - no token or cookie"));
       }
       const parsed = cookie.parse(cookieHeader || "");
       token = parsed?.jwt;
       if (!token) {
+        debugLog("[SOCKET AUTH] No jwt in cookies");
         return next(new Error("Authentication error - no token found"));
       }
     }
 
-    // verify token
     try {
       const decoded = jwt.verify(token, process.env.JWT_SECRET);
       const user = await User.findById(decoded.userId).select("-password");
       if (!user) {
+        debugLog("[SOCKET AUTH] User not found for decoded token");
         return next(new Error("Authentication error - user not found"));
       }
       socket.user = user;
-      socket.authToken = token; // optional: keep token on socket if needed
+      socket.authToken = token;
       return next();
     } catch (err) {
-      console.error("Socket token verify error:", err.message);
+      debugLog("[SOCKET AUTH] Token verify error:", err && err.message);
       return next(new Error("Authentication error - invalid token"));
     }
   } catch (err) {
-    console.error("Socket auth middleware error:", err);
+    debugLog("[SOCKET AUTH] Middleware error:", err && err.message);
     return next(new Error("Authentication error"));
   }
 });
 
-
-
 // ---------------------- WebSocket Handling ---------------------- //
 io.on("connection", (socket) => {
-  console.log("Client connected:", socket.id, socket.user ? `user:${socket.user._id}` : "guest");
+  debugLog("Client connected:", socket.id, socket.user ? `user:${socket.user._id}` : "guest");
 
   // ======== FOOTBALL ROOM HANDLING ========
   socket.on("joinFootballRoom", (roomId) => {
+    debugLog("[WS] joinFootballRoom request", { socketId: socket.id, roomId });
+
     if (!roomId) {
       return socket.emit("error", "Room ID is required to join football room.");
     }
     if (!footballRooms.has(roomId)) {
-      footballRooms.set(roomId, {
-        clients: new Map(),
-        data: {},
-      });
+      footballRooms.set(roomId, { clients: new Map(), data: {} });
     }
     const room = footballRooms.get(roomId);
 
     const username = socket.user?.name || `Guest-${socket.id.slice(0, 5)}`;
     room.clients.set(socket.id, username);
     socket.join(roomId);
+    debugLog(`[ROOM] ${roomId} clients after join:`, Array.from(room.clients.values()));
     emitRoomClients(footballRooms, roomId);
   });
 
@@ -268,20 +299,36 @@ io.on("connection", (socket) => {
       if (!roomId) {
         return socket.emit("error", "Room ID is required for match results.");
       }
-      console.log(`[WS] Football results request from ${socket.id} for room ${roomId}`);
-      const results = await scrapeMatchResults();
-      if (footballRooms.has(roomId)) {
-        footballRooms.get(roomId).data = results;
+      debugLog(`[WS] Football results request from ${socket.id} for room ${roomId}`);
+
+      // if another scrape is running, return cached result to avoid multiple puppeteer launches
+      if (scrapeLock.inProgress) {
+        debugLog("[SCRAPER] Scrape already in progress - returning cached results");
+        const cached = scrapeLock.cachedResults || {};
+        if (footballRooms.has(roomId)) footballRooms.get(roomId).data = cached;
+        io.to(roomId).emit("matchResults", cached);
+        return;
       }
-      io.to(roomId).emit("matchResults", results);
+
+      try {
+        scrapeLock.inProgress = true;
+        const results = await scrapeMatchResults();
+        scrapeLock.cachedResults = results;
+        scrapeLock.lastRun = Date.now();
+        if (footballRooms.has(roomId)) footballRooms.get(roomId).data = results;
+        io.to(roomId).emit("matchResults", results);
+      } finally {
+        scrapeLock.inProgress = false;
+      }
     } catch (error) {
-      console.error("[WS ERROR] Football results request failed:", error);
+      debugLog("[WS ERROR] Football results request failed:", error && error.stack ? error.stack : error);
       socket.emit("error", "Failed to fetch match results");
     }
   });
 
   // ======== STOCK ROOM HANDLING ========
   socket.on("joinStockRoom", async (roomId) => {
+    debugLog("[WS] joinStockRoom request", { socketId: socket.id, roomId });
     try {
       if (!roomId) {
         return socket.emit("error", "Room ID is required to join stock room.");
@@ -299,8 +346,10 @@ io.on("connection", (socket) => {
 
       socket.join(roomId);
       socket.emit("stockUpdate", room.data);
+      debugLog(`[ROOM STOCK] ${roomId} clients after join:`, Array.from(room.clients.values()));
       emitRoomClients(stockRooms, roomId);
     } catch (error) {
+      debugLog("[WS ERROR] joinStockRoom failed:", error && error.message);
       socket.emit("error", `Stock room join failed: ${error.message}`);
     }
   });
@@ -310,6 +359,7 @@ io.on("connection", (socket) => {
       return socket.emit("error", "Invalid updateSymbol payload");
     }
     try {
+      debugLog("[WS] updateSymbol", { symbol, roomId, by: socket.id });
       SYMBOL = symbol;
       const stockData = await fetchStockData(symbol);
       if (stockRooms.has(roomId)) {
@@ -317,7 +367,7 @@ io.on("connection", (socket) => {
         io.to(roomId).emit("stockUpdate", stockData);
       }
     } catch (error) {
-      console.error("Symbol update error:", error);
+      debugLog("Symbol update error:", error && error.message);
       socket.emit("error", "Failed to update stock symbol");
     }
   });
@@ -328,12 +378,12 @@ io.on("connection", (socket) => {
     if (roomMap.has(roomId)) {
       const room = roomMap.get(roomId);
       if (room.clients.has(socket.id)) {
-        // respect DB username if present (don't overwrite)
         if (socket.user) {
           room.clients.set(socket.id, socket.user.name);
         } else {
           room.clients.set(socket.id, username?.trim() || `Guest-${socket.id.slice(0, 5)}`);
         }
+        debugLog(`[ROOM USERNAME] ${roomId} now:`, Array.from(room.clients.values()));
         emitRoomClients(roomMap, roomId);
       }
     }
@@ -341,14 +391,13 @@ io.on("connection", (socket) => {
 
   // ======== DISCONNECT HANDLING ========
   socket.on("disconnect", () => {
-    console.log("Client disconnected:", socket.id);
+    debugLog("Client disconnected:", socket.id);
     [stockRooms, footballRooms].forEach((roomMap) => {
       roomMap.forEach((room, roomId) => {
         if (room.clients.has(socket.id)) {
           room.clients.delete(socket.id);
           emitRoomClients(roomMap, roomId);
           if (room.clients.size === 0) {
-            // garbage collect unused rooms after 5 minutes
             setTimeout(() => roomMap.delete(roomId), 300000);
           }
         }
@@ -358,7 +407,9 @@ io.on("connection", (socket) => {
 
   function emitRoomClients(roomMap, roomId) {
     if (roomMap.has(roomId)) {
-      io.to(roomId).emit("roomClients", Array.from(roomMap.get(roomId).clients.values()));
+      const clients = Array.from(roomMap.get(roomId).clients.values());
+      debugLog(`[EMIT roomClients] ${roomId} ->`, clients);
+      io.to(roomId).emit("roomClients", clients);
     }
   }
 });
@@ -371,18 +422,17 @@ app.post("/upload", upload.single("file"), (req, res) => {
   cloudinary.v2.uploader.upload_stream(
     { resource_type: "auto", public_id: uuidv4() },
     (error, result) => {
-      if (error) return res.status(500).send("Upload failed");
+      if (error) {
+        debugLog("Cloudinary upload failed:", error && error.message);
+        return res.status(500).send("Upload failed");
+      }
       io.emit("fileUploaded", result.secure_url);
       res.json({ fileUrl: result.secure_url });
     }
   ).end(file.buffer);
 });
 
-
 // ---------------------- Serve Frontend in Production ---------------------- //
-import path from "path";
-import { fileURLToPath } from "url";
-
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
@@ -392,19 +442,28 @@ if (process.env.NODE_ENV === "production") {
   app.get("*", (req, res) =>
     res.sendFile(path.resolve(__dirname, "../live-collabs/dist", "index.html"))
   );
+} else {
+  // helpful local root route so visiting server root doesn't 404 in dev
+  app.get("/", (req, res) => {
+    res.send("LiveCollaboration backend running (dev)");
+  });
 }
 
+// health route
+app.get("/api/health", (req, res) => {
+  res.json({ status: "ok", time: new Date().toISOString() });
+});
 
 // ---------------------- Error Handlers ---------------------- //
 app.use(notFound);
 app.use(errorHandler);
 
-
 // ---------------------- Server Initialization ---------------------- //
 const PORT = process.env.PORT || 5001;
 server.listen(PORT, () => {
-  console.log(`Server running on port ${PORT}`);
+  debugLog(`Server running on port ${PORT} (NODE_ENV=${process.env.NODE_ENV})`);
 
+  // periodic stock refresh
   setInterval(async () => {
     const newStockData = await fetchStockData(SYMBOL);
     stockRooms.forEach((room, roomId) => {
