@@ -25,8 +25,13 @@ const logoPaths = {
   Liverpool: LiverpoolLogo,
   "Nottingham Forest": ForestLogo
 };
+const socketURL =
+  window.location.hostname === "localhost"
+    ? "http://localhost:5001"
+    : "https://livecollaboration.onrender.com";
 
-const socket = io("http://localhost:5001", {
+const socket = io(socketURL, {
+  withCredentials: true,
   transports: ["websocket", "polling"],
 });
 

@@ -4,7 +4,13 @@ import { io } from "socket.io-client";
 import { useParams } from "react-router-dom";
 import { AuthContext } from "../context/AuthContext.jsx";
 
-const socket = io("http://localhost:5001", {
+const socketURL =
+  window.location.hostname === "localhost"
+    ? "http://localhost:5001"
+    : "https://livecollaboration.onrender.com";
+
+const socket = io(socketURL, {
+  withCredentials: true,
   transports: ["websocket", "polling"],
 });
 
