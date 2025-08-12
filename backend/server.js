@@ -176,7 +176,37 @@ const stockRooms = new Map(); // roomId -> { data, clients: Map<socketId, userna
 const footballRooms = new Map(); // roomId -> { data, clients: Map<socketId, username> }
 
 // ---------------------- Stock Data Functions ---------------------- //
+app.get("/api/test-alpha", async (req, res) => {
+  try {
+    const testSymbol = "IBM";
+    const response = await axios.get("https://www.alphavantage.co/query", {
+      params: {
+        function: "TIME_SERIES_WEEKLY_ADJUSTED",
+        symbol: testSymbol,
+        apikey: process.env.ALPHA_VANTAGE_KEY,
+      },
+    });
+    res.json(response.data);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+
+
+
+// Cache store
+const stockCache = {};
+
+// Modified function with caching
 async function fetchStockData(symbol) {
+  // If we have fresh data (< 5 min old), return it
+  if (stockCache[symbol] && (Date.now() - stockCache[symbol].timestamp < 5 * 60 * 1000)) {
+    debugLog(`[CACHE] Returning cached data for ${symbol}`);
+    return stockCache[symbol].data;
+  }
+
+  debugLog(`[FETCH STOCK] Fetching fresh data for ${symbol}`);
   try {
     const response = await axios.get("https://www.alphavantage.co/query", {
       params: {
@@ -185,34 +215,36 @@ async function fetchStockData(symbol) {
         apikey: API_KEY,
       },
     });
-    debugLog("[FETCH STOCK] Raw API response keys:", Object.keys(response.data || {}));
-    debugLog("[FETCH STOCK] Preview:", JSON.stringify(response.data || {}).slice(0, 200));
 
-    if (response.data["Error Message"]) {
-      debugLog("API Error:", response.data["Error Message"]);
+    if (response.data["Error Message"] || response.data["Note"]) {
+      debugLog("API Error/Note:", response.data["Error Message"] || response.data["Note"]);
       return [];
     }
 
     const rawData = response.data["Weekly Adjusted Time Series"];
-    return rawData
-      ? Object.entries(rawData)
-          .map(([date, values]) => ({
-            date,
-            open: parseFloat(values["1. open"]),
-            high: parseFloat(values["2. high"]),
-            low: parseFloat(values["3. low"]),
-            close: parseFloat(values["4. close"]),
-            adjustedClose: parseFloat(values["5. adjusted close"]),
-            volume: parseInt(values["6. volume"]),
-            dividend: parseFloat(values["7. dividend amount"]),
-          }))
-          .reverse()
+    const parsed = rawData
+      ? Object.entries(rawData).map(([date, values]) => ({
+          date,
+          open: parseFloat(values["1. open"]),
+          high: parseFloat(values["2. high"]),
+          low: parseFloat(values["3. low"]),
+          close: parseFloat(values["4. close"]),
+          adjustedClose: parseFloat(values["5. adjusted close"]),
+          volume: parseInt(values["6. volume"]),
+          dividend: parseFloat(values["7. dividend amount"]),
+        })).reverse()
       : [];
+
+    // Save in cache
+    stockCache[symbol] = { data: parsed, timestamp: Date.now() };
+    return parsed;
+
   } catch (error) {
-    debugLog("Error fetching stock data:", error && error.message);
+    debugLog("Error fetching stock data:", error.message);
     return [];
   }
 }
+
 
 // ---------------------- WebSocket Setup ---------------------- //
 const io = new Server(server, {
