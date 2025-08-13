@@ -176,24 +176,6 @@ const stockRooms = new Map(); // roomId -> { data, clients: Map<socketId, userna
 const footballRooms = new Map(); // roomId -> { data, clients: Map<socketId, username> }
 
 // ---------------------- Stock Data Functions ---------------------- //
-app.get("/api/test-alpha", async (req, res) => {
-  try {
-    const testSymbol = "IBM";
-    const response = await axios.get("https://www.alphavantage.co/query", {
-      params: {
-        function: "TIME_SERIES_WEEKLY_ADJUSTED",
-        symbol: testSymbol,
-        apikey: process.env.ALPHA_VANTAGE_KEY,
-      },
-    });
-    res.json(response.data);
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
-});
-
-
-
 
 // Cache store
 const stockCache = {};
@@ -201,7 +183,10 @@ const stockCache = {};
 // Modified function with caching
 async function fetchStockData(symbol) {
   // If we have fresh data (< 5 min old), return it
-  if (stockCache[symbol] && (Date.now() - stockCache[symbol].timestamp < 5 * 60 * 1000)) {
+  if (
+    stockCache[symbol] &&
+    Date.now() - stockCache[symbol].timestamp < 5 * 60 * 1000
+  ) {
     debugLog(`[CACHE] Returning cached data for ${symbol}`);
     return stockCache[symbol].data;
   }
@@ -217,7 +202,10 @@ async function fetchStockData(symbol) {
     });
 
     if (response.data["Error Message"] || response.data["Note"]) {
-      debugLog("API Error/Note:", response.data["Error Message"] || response.data["Note"]);
+      debugLog(
+        "API Error/Note:",
+        response.data["Error Message"] || response.data["Note"]
+      );
       return [];
     }
 
@@ -232,18 +220,18 @@ async function fetchStockData(symbol) {
           adjustedClose: parseFloat(values["5. adjusted close"]),
           volume: parseInt(values["6. volume"]),
           dividend: parseFloat(values["7. dividend amount"]),
-        })).reverse()
+        }))
       : [];
 
     // Save in cache
-    stockCache[symbol] = { data: parsed, timestamp: Date.now() };
-    return parsed;
-
+    stockCache[symbol] = { data: parsed.reverse(), timestamp: Date.now() };
+    return stockCache[symbol].data;
   } catch (error) {
     debugLog("Error fetching stock data:", error.message);
     return [];
   }
 }
+
 
 
 // ---------------------- WebSocket Setup ---------------------- //
