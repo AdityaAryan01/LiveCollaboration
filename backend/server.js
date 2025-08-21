@@ -180,7 +180,9 @@ const footballRooms = new Map(); // roomId -> { data, clients: Map<socketId, use
 // Cache store
 const stockCache = {};
 
+// Modified function with caching + detailed error handling
 async function fetchStockData(symbol) {
+  // If we have fresh data (< 5 min old), return it
   if (
     stockCache[symbol] &&
     Date.now() - stockCache[symbol].timestamp < 5 * 60 * 1000
@@ -199,41 +201,47 @@ async function fetchStockData(symbol) {
       },
     });
 
-    // Debug: Log what Alpha Vantage really sent back
-    debugLog(`[FETCH STOCK] Response keys:`, Object.keys(response.data || {}));
-    if (response.data["Note"]) {
-      debugLog(`[ALPHA VANTAGE NOTE]`, response.data["Note"]);
+    // ----- Handle Alpha Vantage special responses -----
+    if (response.data["Information"]) {
+      debugLog("[ALPHA VANTAGE INFO]", response.data["Information"]);
+      return { error: response.data["Information"], data: [] };
     }
+
     if (response.data["Error Message"]) {
-      debugLog(`[ALPHA VANTAGE ERROR]`, response.data["Error Message"]);
+      debugLog("[ALPHA VANTAGE ERROR]", response.data["Error Message"]);
+      return { error: response.data["Error Message"], data: [] };
     }
 
+    if (response.data["Note"]) {
+      debugLog("[ALPHA VANTAGE NOTE]", response.data["Note"]);
+      return { error: response.data["Note"], data: [] };
+    }
+
+    // ----- Parse valid data -----
     const rawData = response.data["Weekly Adjusted Time Series"];
-    if (!rawData) {
-      debugLog(`[FETCH STOCK] No 'Weekly Adjusted Time Series' found for ${symbol}`);
-      return [];
-    }
+    const parsed = rawData
+      ? Object.entries(rawData).map(([date, values]) => ({
+          date,
+          open: parseFloat(values["1. open"]),
+          high: parseFloat(values["2. high"]),
+          low: parseFloat(values["3. low"]),
+          close: parseFloat(values["4. close"]),
+          adjustedClose: parseFloat(values["5. adjusted close"]),
+          volume: parseInt(values["6. volume"]),
+          dividend: parseFloat(values["7. dividend amount"]),
+        }))
+      : [];
 
-    const parsed = Object.entries(rawData).map(([date, values]) => ({
-      date,
-      open: parseFloat(values["1. open"]),
-      high: parseFloat(values["2. high"]),
-      low: parseFloat(values["3. low"]),
-      close: parseFloat(values["4. close"]),
-      adjustedClose: parseFloat(values["5. adjusted close"]),
-      volume: parseInt(values["6. volume"]),
-      dividend: parseFloat(values["7. dividend amount"]),
-    }));
-
-    debugLog(`[FETCH STOCK] Parsed ${parsed.length} rows for ${symbol}`);
-
+    // Save in cache
     stockCache[symbol] = { data: parsed.reverse(), timestamp: Date.now() };
-    return stockCache[symbol].data;
+    return { error: null, data: stockCache[symbol].data };
+
   } catch (error) {
     debugLog("Error fetching stock data:", error.message);
-    return [];
+    return { error: error.message, data: [] };
   }
 }
+
 
 
 
