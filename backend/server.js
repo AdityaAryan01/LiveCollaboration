@@ -180,7 +180,7 @@ const footballRooms = new Map(); // roomId -> { data, clients: Map<socketId, use
 // Cache store
 const stockCache = {};
 
-// Modified function with caching + detailed error handling
+// Modified function with caching
 async function fetchStockData(symbol) {
   // If we have fresh data (< 5 min old), return it
   if (
@@ -201,23 +201,14 @@ async function fetchStockData(symbol) {
       },
     });
 
-    // ----- Handle Alpha Vantage special responses -----
-    if (response.data["Information"]) {
-      debugLog("[ALPHA VANTAGE INFO]", response.data["Information"]);
-      return { error: response.data["Information"], data: [] };
+    if (response.data["Error Message"] || response.data["Note"]) {
+      debugLog(
+        "API Error/Note:",
+        response.data["Error Message"] || response.data["Note"]
+      );
+      return [];
     }
 
-    if (response.data["Error Message"]) {
-      debugLog("[ALPHA VANTAGE ERROR]", response.data["Error Message"]);
-      return { error: response.data["Error Message"], data: [] };
-    }
-
-    if (response.data["Note"]) {
-      debugLog("[ALPHA VANTAGE NOTE]", response.data["Note"]);
-      return { error: response.data["Note"], data: [] };
-    }
-
-    // ----- Parse valid data -----
     const rawData = response.data["Weekly Adjusted Time Series"];
     const parsed = rawData
       ? Object.entries(rawData).map(([date, values]) => ({
@@ -234,15 +225,12 @@ async function fetchStockData(symbol) {
 
     // Save in cache
     stockCache[symbol] = { data: parsed.reverse(), timestamp: Date.now() };
-    return { error: null, data: stockCache[symbol].data };
-
+    return stockCache[symbol].data;
   } catch (error) {
     debugLog("Error fetching stock data:", error.message);
-    return { error: error.message, data: [] };
+    return [];
   }
 }
-
-
 
 
 
