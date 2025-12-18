@@ -1,4 +1,4 @@
-// server.js (merged with auth)
+
 import express from "express";
 import http from "http";
 import { Server } from "socket.io";
@@ -16,32 +16,32 @@ import jwt from "jsonwebtoken";
 import path from "path";
 import { fileURLToPath } from "url";
 
-// auth / db imports (your files)
-import connectDB from "./config/db.js"; // your db connection file
+
+import connectDB from "./config/db.js"; 
 import userRoutes from "./routes/userRoutes.js";
 import User from "./models/userModel.js";
 import { notFound, errorHandler } from "./middleware/errorMiddleware.js";
 
 dotenv.config();
 
-// Connect to MongoDB
+
 connectDB();
 
 const app = express();
 const server = http.createServer(app);
 
-// Middleware for JSON and cookies
+
 app.use(express.json());
 app.use(cookieParser());
 
-// ====== Allowed origins (include your deployed front) ======
+
 const allowedOrigins = [
   "http://localhost:5173",
   "http://localhost:5174",
   "https://livecollaboration.onrender.com",
 ];
 
-// CORS Configuration
+
 app.use(
   cors({
     origin: allowedOrigins,
@@ -50,17 +50,16 @@ app.use(
   })
 );
 
-// Mount your auth routes
+
 app.use("/api/users", userRoutes);
 
-// Initialize Cloudinary
 cloudinary.v2.config({
   cloud_name: process.env.CLOUD_NAME,
   api_key: process.env.CLOUD_API_KEY,
   api_secret: process.env.CLOUD_API_SECRET,
 });
 
-// Configure Multer for file uploads
+
 const storage = multer.memoryStorage();
 const upload = multer({ storage });
 
@@ -172,17 +171,17 @@ async function scrapeMatchResults() {
 }
 
 // ---------------------- Room Management ---------------------- //
-const stockRooms = new Map(); // roomId -> { data, clients: Map<socketId, username> }
-const footballRooms = new Map(); // roomId -> { data, clients: Map<socketId, username> }
+const stockRooms = new Map(); 
+const footballRooms = new Map(); 
 
 // ---------------------- Stock Data Functions ---------------------- //
 
-// Cache store
+
 const stockCache = {};
 
-// Modified function with caching
+
 async function fetchStockData(symbol) {
-  // If we have fresh data (< 5 min old), return it
+ 
   if (
     stockCache[symbol] &&
     Date.now() - stockCache[symbol].timestamp < 5 * 60 * 1000
@@ -223,7 +222,7 @@ async function fetchStockData(symbol) {
         }))
       : [];
 
-    // Save in cache
+    
     stockCache[symbol] = { data: parsed.reverse(), timestamp: Date.now() };
     return stockCache[symbol].data;
   } catch (error) {
@@ -244,7 +243,7 @@ const io = new Server(server, {
   transports: ["websocket", "polling"],
 });
 
-// Socket auth middleware: accept token from handshake.auth.token OR cookie
+
 io.use(async (socket, next) => {
   try {
     const authToken = socket.handshake?.auth?.token;
@@ -456,13 +455,12 @@ if (process.env.NODE_ENV === "production") {
     res.sendFile(path.resolve(__dirname, "../live-collabs/dist", "index.html"))
   );
 } else {
-  // helpful local root route so visiting server root doesn't 404 in dev
+
   app.get("/", (req, res) => {
     res.send("LiveCollaboration backend running (dev)");
   });
 }
 
-// health route
 app.get("/api/health", (req, res) => {
   res.json({ status: "ok", time: new Date().toISOString() });
 });
