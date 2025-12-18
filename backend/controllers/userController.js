@@ -11,18 +11,17 @@ const authUser = asyncHandler(async (req, res) => {
 
   const user = await User.findOne({ email });
 
-  if (user && (await user.matchPassword(password))) {
-    // Sign a token string for socket use
+  if (user && (await user.matchPassword(password))) 
     const tokenString = jwt.sign({ userId: user._id }, process.env.JWT_SECRET, { expiresIn: '30d' });
 
-    // Still set httpOnly cookie for normal API auth
+  
     generateToken(res, user._id);
 
     res.json({
       _id: user._id,
       name: user.name,
       email: user.email,
-      token: tokenString, // <-- Added for frontend socket auth
+      token: tokenString, 
     });
   } else {
     res.status(401);
@@ -55,17 +54,17 @@ const registerUser = asyncHandler(async (req, res) => {
 
     console.log("✅ User created:", user._id);
 
-    // Sign a token string for socket use
+    
     const tokenString = jwt.sign({ userId: user._id }, process.env.JWT_SECRET, { expiresIn: '30d' });
 
-    // Still set httpOnly cookie for normal API auth
+    
     generateToken(res, user._id);
 
     res.status(201).json({
       _id: user._id,
       name: user.name,
       email: user.email,
-      token: tokenString, // <-- Added for frontend socket auth
+      token: tokenString, 
     });
   } catch (err) {
     console.error("❌ Error creating user:", err);
